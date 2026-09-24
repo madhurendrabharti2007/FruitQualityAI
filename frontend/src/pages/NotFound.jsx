@@ -1,0 +1,2 @@
+import { Link } from 'react-router-dom';
+export default function NotFound({ error = false }) { return <main className="empty-page"><p className="eyebrow">{error ? 'Something went sideways' : '404'}</p><h1>{error ? 'That scan needs<br />a fresh start.' : 'This page is<br /><em>out of season.</em>'}</h1><p>Let’s get you back to a useful place.</p><Link to="/" className="primary-button">Back home</Link></main>; }

@@ -1,0 +1,1 @@
+export default { darkMode: 'class', content: ['./index.html', './src/**/*.{js,jsx}'], theme: { extend: { colors: { citrus: { 50: '#fff9e8', 100: '#ffefbd', 500: '#ef8d35', 700: '#be5e24' }, forest: '#17342a', plum: '#382d3e' }, fontFamily: { display: ['Fraunces', 'serif'], sans: ['DM Sans', 'sans-serif'] } } }, plugins: [] };

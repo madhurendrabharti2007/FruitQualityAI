@@ -44,6 +44,7 @@ class UserResponse(BaseModel):
     email: str
     created_at: str
     role: str = "customer"
+    access_token: str | None = None
 
 class HistoryResponse(BaseModel):
     id: int

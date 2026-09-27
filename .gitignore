@@ -19,12 +19,14 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.egg-link
 
 # Virtual Environment
 .venv/
 venv/
 ENV/
 env/
+.python-version
 
 # IDE
 .vscode/
@@ -41,16 +43,66 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite-journal
+*.db-journal
+backend/fruit_quality.db
 
 # Environment variables
 .env
-
-# Node
-node_modules/
-dist/
-.cache/
+.env.local
+.env.*.local
+backend/.env
 
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.cache/
+.parcel-cache/
+.turbo/
+
+# Vercel
 .vercel/
+.vercelignore
+!vercel.json
+
+# Uploaded / runtime-generated images
+backend/uploads/
+backend/uploads/**/*
+!backend/uploads/.gitkeep
 FruitNet_Processed Images/
+
+# Test artifacts & fixture images
+test_*.jpg
+test_*.jpeg
+test_*.png
+hw_test.py
+smoke_test.py
+
+# Trained model artifacts (optional & large)
+backend/app/model/saved_model/*.keras
+backend/app/model/saved_model/*.h5
+backend/app/model/saved_model/*.pt
+backend/app/model/saved_model/*.pth
+backend/app/model/saved_model/labels.json
+!backend/app/model/saved_model/.gitkeep
+
+# Dataset (too large for git)
+backend/dataset/**/*
+!backend/dataset/.gitkeep
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+.vercel
+.env*

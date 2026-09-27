@@ -1,1 +1,13 @@
-{"rewrites":[{"source":"/(.*)","destination":"/index.html"}]}
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "cd frontend && npm install && cd .. && pip install -r requirements.txt --quiet --break-system-packages",
+  "buildCommand": "cd frontend && npx vite build --outDir dist",
+  "outputDirectory": "frontend/dist",
+
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/uploads/(.*)", "destination": "/api" },
+    { "source": "/((?!api|uploads|_vercel|static|assets|favicon).*)", "destination": "/index.html" }
+  ]
+}

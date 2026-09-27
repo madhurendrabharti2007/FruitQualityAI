@@ -42,7 +42,10 @@ def _ripeness(fruit: str, status: str) -> tuple[str, str]:
         db.close()
 
 @router.post("/predict", response_model=PredictionResponse | NotRecognizedResponse)
-async def predict(file: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
+async def predict(file: UploadFile = File(...), access_token: str | None = Cookie(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    from app.routers.auth import _bearer_token
+    token = access_token or _bearer_token(authorization)
+    user = current_user(token, authorization, db)
     target = None
     try:
         if file.content_type not in ALLOWED:

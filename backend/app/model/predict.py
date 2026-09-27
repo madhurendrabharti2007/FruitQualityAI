@@ -94,14 +94,14 @@ class FruitPredictor:
                 logger.warning("Image rejected as monochrome/document: mean_sat=%.2f, low_color_ratio=%.2f", mean_c_sat, low_color_ratio)
                 return False, NOT_RECOGNIZED_MESSAGE
 
-            # Organic fruit hues: Reds, Oranges, Yellows, Greens
-            fruit_pixels = ((c_hue <= 165) | (c_hue >= 340)) & (c_sat > 0.15)
+            # Organic fruit hues: Reds, Oranges, Yellows, Greens + Purples (grapes)
+            fruit_pixels = (((c_hue <= 175) | (c_hue >= 335)) | ((c_hue >= 265) & (c_hue <= 315))) & (c_sat > 0.12)
             fruit_ratio = float(np.mean(fruit_pixels))
 
-            # Cool artificial hues (pure blues, cyans, cold purples: 185 to 320)
-            cool_pixels = (c_hue >= 185) & (c_hue <= 320) & (c_sat > 0.25)
+            # Cool artificial hues (pure blues, cyans: 185 to 260) - exclude purple grape range (265-315)
+            cool_pixels = (c_hue >= 185) & (c_hue < 265) & (c_sat > 0.25)
             cool_ratio = float(np.mean(cool_pixels))
-            if cool_ratio > 0.35 and fruit_ratio < 0.30:
+            if cool_ratio > 0.35 and fruit_ratio < 0.25:
                 logger.warning("Image rejected as non-fruit object: cool_ratio=%.2f, fruit_ratio=%.2f", cool_ratio, fruit_ratio)
                 return False, NOT_RECOGNIZED_MESSAGE
 
@@ -113,7 +113,7 @@ class FruitPredictor:
                 logger.warning("Image rejected as portrait/person: skin_ratio=%.2f", skin_ratio)
                 return False, NOT_RECOGNIZED_MESSAGE
 
-            if fruit_ratio < 0.15:
+            if fruit_ratio < 0.10:
                 logger.warning("Image rejected for lack of fruit color signals: fruit_ratio=%.2f", fruit_ratio)
                 return False, NOT_RECOGNIZED_MESSAGE
 
@@ -150,33 +150,75 @@ class FruitPredictor:
         c_hue = hue[h // 5:4 * h // 5, w // 5:4 * w // 5]
         c_bright = cmax[h // 5:4 * h // 5, w // 5:4 * w // 5]
 
-        fruit_mask = ((c_hue <= 165) | (c_hue >= 340)) & (c_sat > 0.15)
+        fruit_mask = (((c_hue <= 175) | (c_hue >= 335)) | ((c_hue >= 260) & (c_hue <= 320))) & (c_sat > 0.10)
         if not np.any(fruit_mask):
-            return "Apple", "fresh", 85.0
+            mean_r = float(np.mean(c_bright * (r[h // 5:4 * h // 5, w // 5:4 * w // 5] / (c_bright + 1e-8))))
+            mean_g = float(np.mean(c_bright * (g[h // 5:4 * h // 5, w // 5:4 * w // 5] / (c_bright + 1e-8))))
+            mean_b = float(np.mean(c_bright * (b[h // 5:4 * h // 5, w // 5:4 * w // 5] / (c_bright + 1e-8))))
+            mean_rgb = np.array([mean_r, mean_g, mean_b]) + 1e-8
+            mean_rgb = mean_rgb / np.max(mean_rgb)
+            r_norm, g_norm, b_norm = mean_rgb
+            if r_norm > 0.85 and g_norm < 0.75 and b_norm < 0.75:
+                fruit = "Apple"
+            elif r_norm > 0.80 and g_norm > 0.80 and b_norm < 0.55:
+                fruit = "Banana"
+            elif r_norm > 0.80 and g_norm > 0.55 and g_norm < 0.85 and b_norm < 0.50:
+                fruit = "Orange"
+            elif r_norm > 0.55 and g_norm > 0.85 and b_norm < 0.60:
+                fruit = "Mango"
+            elif r_norm < 0.60 and g_norm > 0.55 and b_norm > 0.55:
+                fruit = "Papaya"
+            elif r_norm > 0.55 and g_norm < 0.55 and b_norm > 0.55:
+                fruit = "Tomato"
+            else:
+                fruit = "Apple"
+            dark_blemishes = float(np.mean(c_bright < 0.35))
+            p10 = float(np.percentile(c_bright, 10))
+            b_std = float(np.std(c_bright))
+            gray_rot = float(np.mean((c_bright < 0.45) & (c_sat < 0.25)))
+            is_rotten = (dark_blemishes > 0.15) or (p10 < 0.30 and b_std > 0.15) or (gray_rot > 0.20) or (float(np.mean(c_bright)) < 0.38)
+            status = "rotten" if is_rotten else "fresh"
+            confidence = float(np.clip(82.0 + np.mean(c_sat) * 12.0, 80.0, 94.0))
+            return fruit, status, round(confidence, 1)
 
         f_hues = c_hue[fruit_mask]
         f_sats = c_sat[fruit_mask]
         f_bright = c_bright[fruit_mask]
 
-        rads = np.deg2rad(f_hues)
-        avg_rad = np.arctan2(np.mean(np.sin(rads)), np.mean(np.cos(rads)))
-        avg_hue = float((np.rad2deg(avg_rad)) % 360.0)
+        purple_mask = (f_hues >= 260) & (f_hues <= 320)
+        purple_ratio = float(np.mean(purple_mask)) if len(f_hues) > 0 else 0.0
 
-        # Distinguish fruit type by hue
-        if 20 <= avg_hue < 42:
-            fruit = "Orange"
-        elif 42 <= avg_hue < 68:
+        red_yellow_hues = f_hues[(f_hues <= 175) | (f_hues >= 335)]
+        if len(red_yellow_hues) > 0:
+            rads = np.deg2rad(red_yellow_hues)
+            avg_rad = np.arctan2(np.mean(np.sin(rads)), np.mean(np.cos(rads)))
+            avg_hue = float((np.rad2deg(avg_rad)) % 360.0)
+        else:
+            avg_hue = float(np.mean(f_hues)) if len(f_hues) > 0 else 0.0
+
+        avg_bright = float(np.mean(f_bright))
+        avg_sat = float(np.mean(f_sats))
+
+        if purple_ratio > 0.35:
+            fruit = "Grapes"
+        elif (335 <= avg_hue <= 360) or (0 <= avg_hue < 12):
+            if avg_sat > 0.50 and avg_bright > 0.55:
+                fruit = "Tomato" if (avg_hue < 8 or avg_hue > 350) and avg_bright > 0.62 else "Apple"
+            else:
+                fruit = "Apple"
+        elif 12 <= avg_hue < 38:
+            fruit = "Tomato" if avg_sat > 0.60 and avg_bright > 0.60 else "Orange"
+        elif 38 <= avg_hue < 70:
             fruit = "Banana"
-        elif 68 <= avg_hue <= 100:
-            fruit = "Mango"
-        elif 100 < avg_hue <= 160:
-            fruit = "Papaya" if np.mean(f_bright) < 0.55 else "Grapes"
-        elif 160 < avg_hue <= 190:
-            fruit = "Tomato"
+        elif 70 <= avg_hue <= 105:
+            fruit = "Mango" if avg_bright > 0.50 else "Grapes"
+        elif 105 < avg_hue <= 175:
+            fruit = "Papaya"
+        elif 260 <= avg_hue <= 320:
+            fruit = "Grapes"
         else:
             fruit = "Apple"
 
-        # Distinguish freshness by discoloration / dark necrotic blemishes / variance
         dark_blemishes = float(np.mean(c_bright < 0.35))
         p10 = float(np.percentile(c_bright, 10))
         b_std = float(np.std(c_bright))

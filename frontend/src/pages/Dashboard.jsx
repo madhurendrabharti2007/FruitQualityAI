@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 
 export default function Dashboard() {
   const { user, loading, setUser } = useAuth(); const [items, setItems] = useState([]); const [state, setState] = useState('loading'); const [vendorBusy, setVendorBusy] = useState(false);
-  useEffect(() => { if (!user) return; let active = true; getHistory().then(value => { if (active) { setItems(value); setState('ready'); } }).catch(() => { if (active) setState('error'); }); return () => { active = false; }; }, [user]);
+  useEffect(() => { if (!user) return; let active = true; getHistory().then(value => { if (active) { setItems(Array.isArray(value) ? value : (value?.items || value?.history || [])); setState('ready'); } }).catch(() => { if (active) setState('error'); }); return () => { active = false; }; }, [user]);
   const fresh = items.filter(item => item.status === 'fresh').length; const rotten = items.filter(item => item.status === 'rotten').length;
   if (!loading && !user) return <main className="empty-page"><History size={34} /><h1>Your dashboard awaits.</h1><p>Sign in to see your saved freshness checks and scan history.</p><Link to="/signin" className="primary-button">Sign in <ChevronRight size={16} /></Link></main>;
   const becomeVendor = async () => { setVendorBusy(true); try { const result = await requestVendorAccess(); setUser({ ...user, role: result.role }); } finally { setVendorBusy(false); } };

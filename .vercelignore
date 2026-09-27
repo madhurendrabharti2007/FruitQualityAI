@@ -1,7 +1,184 @@
-node_modules
-build
-dist
-.git
-.trae
-.log
-.figma
+# ================================================================
+# MASSIVE training dataset - 18,452+ image files, NOT required at runtime.
+# Exact folder name matching (underscore + space + space variants):
+# ================================================================
+FruitNet_Processed Images/
+FruitNet Processed Images/
+FruitNet*Processed*Images/
+Processed Images_Fruits/
+
+# ================================================================
+# Python virtual environments - Vercel installs from requirements.txt.
+# These are the #1 source of file count bloat (thousands of files each):
+#   .venv/          = 7,701 files
+#   backend/.venv/  = 6,868 files
+#   backend/venv/   = 3,928 files
+# Patterns without leading / match at ANY directory level.
+# ================================================================
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# ================================================================
+# Python bytecode / caches - ANY level of the tree
+# ================================================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*$py.class
+*.so
+
+# ================================================================
+# Node dependencies - Vercel runs its own npm install
+#   frontend/node_modules/ = 8,019 files
+# ================================================================
+node_modules/
+
+# ================================================================
+# Python build / packaging artifacts
+# ================================================================
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+*.egg-link
+.Python
+dist/
+
+# ================================================================
+# Pre-built frontend output - Vercel rebuilds from source each deploy
+# ================================================================
+frontend/dist/
+frontend/build/
+.cache/
+.parcel-cache/
+.turbo/
+
+# ================================================================
+# Version control metadata
+# ================================================================
+.git/
+.gitattributes
+.hg/
+.svn/
+
+# ================================================================
+# IDE / editor configs and temp files
+# ================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ================================================================
+# OS junk files
+# ================================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ================================================================
+# Secrets / env files - NEVER upload these to Vercel source bundles.
+# Env vars must be set via Vercel Dashboard / CLI instead.
+# .env.example is kept so reviewers can see the expected shape.
+# ================================================================
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.staging
+backend/.env
+!.env.example
+!backend/.env.example
+
+# ================================================================
+# Local Vercel CLI state (project is linked via CLI already)
+# ================================================================
+.vercel/
+
+# ================================================================
+# SQLite databases - ephemeral /tmp copy is created fresh per lambda
+# The local fruit_quality.db has only dev seed data, not required.
+# ================================================================
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.db-journal
+
+# ================================================================
+# Runtime user uploads (photos) - ephemeral / never part of bundle
+# Uploads land in /tmp/uploads on the serverless runtime.
+# ================================================================
+backend/uploads/
+uploads/
+
+# ================================================================
+# Trained model weight artifacts
+# Demo classifier heuristic is embedded in predict.py source code;
+# these large binary weight files are NOT needed at runtime on Vercel.
+# ================================================================
+backend/app/model/saved_model/*.keras
+backend/app/model/saved_model/*.h5
+backend/app/model/saved_model/*.pt
+backend/app/model/saved_model/*.pth
+backend/app/model/saved_model/labels.json
+!backend/app/model/saved_model/.gitkeep
+
+# ================================================================
+# Local dataset directory (placeholder .gitkeep is fine)
+# ================================================================
+backend/dataset/
+
+# ================================================================
+# Local development test scripts / fixture images
+# ================================================================
+test_*.jpg
+test_*.jpeg
+test_*.png
+hw_test.py
+smoke_test.py
+
+# ================================================================
+# Logs / crash dumps
+# ================================================================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ================================================================
+# Backup / editor autosave files
+# ================================================================
+*.bak
+*.backup
+*.orig
+
+# ================================================================
+# Docker config – not used by the Vercel serverless runtime
+# ================================================================
+Dockerfile
+docker-compose.yml
+docker-compose.yaml
+
+# ================================================================
+# Trae IDE internal state
+# ================================================================
+.trae/

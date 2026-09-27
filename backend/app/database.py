@@ -1,11 +1,25 @@
 """SQLite persistence for fruit guidance content."""
+import os
 from pathlib import Path
 from sqlalchemy import create_engine, ForeignKey, String, Text, Integer, Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from datetime import datetime, timedelta
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-DATABASE_URL = f"sqlite:///{BASE_DIR / 'fruit_quality.db'}"
+ENV_DB_PATH = os.environ.get("DATABASE_URL") or os.environ.get("SQLITE_DB_PATH")
+if ENV_DB_PATH:
+    if ENV_DB_PATH.startswith("sqlite:///"):
+        DATABASE_URL = ENV_DB_PATH
+    else:
+        DATABASE_URL = f"sqlite:///{ENV_DB_PATH}"
+else:
+    DB_FOLDER = Path(os.environ.get("SQLITE_DB_DIR", str(BASE_DIR)))
+    try:
+        DB_FOLDER.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        DB_FOLDER = Path("/tmp")
+    DATABASE_URL = f"sqlite:///{DB_FOLDER / 'fruit_quality.db'}"
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 

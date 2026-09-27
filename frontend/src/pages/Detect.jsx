@@ -23,7 +23,7 @@ export default function Detect() {
       setError(
         err.response?.data?.detail ||
           (err.request
-            ? 'The detector is unavailable. Please confirm the backend is running at http://127.0.0.1:8000.'
+            ? 'The detector is unavailable right now. Please refresh and try again in a moment.'
             : 'The detector could not process that image.')
       );
     } finally {

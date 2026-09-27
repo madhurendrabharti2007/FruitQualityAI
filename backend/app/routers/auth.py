@@ -4,7 +4,7 @@ import os
 import re
 import secrets
 import logging
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
@@ -37,21 +37,42 @@ def decode_token(token: str) -> int | None:
         return None
 
 
-def current_user(access_token: str | None = Cookie(default=None), db: Session = Depends(get_db)) -> User:
-    user_id = decode_token(access_token or "")
+def _bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    parts = authorization.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
+
+
+def current_user(access_token: str | None = Cookie(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> User:
+    token = access_token or _bearer_token(authorization)
+    user_id = decode_token(token or "")
     user = db.get(User, user_id) if user_id else None
     if not user:
         raise HTTPException(401, "Please sign in to continue.")
     return user
 
 
-def user_payload(user: User) -> dict:
-    return {"id": user.id, "name": user.name, "email": user.email, "created_at": user.created_at.isoformat(), "role": user.role or "customer"}
+def user_payload(user: User, token: str | None = None) -> dict:
+    payload = {"id": user.id, "name": user.name, "email": user.email, "created_at": user.created_at.isoformat(), "role": user.role or "customer"}
+    if token is not None:
+        payload["access_token"] = token
+    return payload
 
 
-def set_token(response: Response, user: User) -> None:
+def set_token(response: Response, user: User) -> str:
     token = jwt.encode({"sub": str(user.id), "exp": datetime.now(timezone.utc) + timedelta(days=TOKEN_DAYS)}, SECRET_KEY, algorithm=ALGORITHM)
-    response.set_cookie("access_token", token, httponly=True, samesite="lax", secure=False, max_age=TOKEN_DAYS * 86400)
+    is_vercel = bool(os.environ.get("VERCEL") or os.environ.get("VERCEL_ENV") or os.environ.get("ENV") == "production")
+    response.set_cookie(
+        "access_token", token,
+        httponly=True,
+        samesite="lax",
+        secure=is_vercel,
+        max_age=TOKEN_DAYS * 86400,
+    )
+    return token
 
 @router.post("/signup", response_model=UserResponse)
 def signup(payload: AuthInput, response: Response, db: Session = Depends(get_db)):
@@ -66,16 +87,16 @@ def signup(payload: AuthInput, response: Response, db: Session = Depends(get_db)
     db.add(user)
     db.commit()
     db.refresh(user)
-    set_token(response, user)
-    return user_payload(user)
+    token = set_token(response, user)
+    return user_payload(user, token)
 
 @router.post("/login", response_model=UserResponse)
 def login(payload: AuthInput, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email.strip().lower()).first()
     if not user or not pwd_context.verify(payload.password, user.hashed_password):
         raise HTTPException(401, "Email or password is incorrect.")
-    set_token(response, user)
-    return user_payload(user)
+    token = set_token(response, user)
+    return user_payload(user, token)
 
 @router.post("/logout")
 def logout(response: Response):
@@ -83,20 +104,21 @@ def logout(response: Response):
     return {"status": "ok"}
 
 @router.get("/me", response_model=UserResponse | None)
-def me(access_token: str | None = Cookie(default=None), db: Session = Depends(get_db)):
-    user_id = decode_token(access_token or "")
+def me(access_token: str | None = Cookie(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    token = access_token or _bearer_token(authorization)
+    user_id = decode_token(token or "")
     user = db.get(User, user_id) if user_id else None
     return user_payload(user) if user else None
 
 @router.get("/history", response_model=list[HistoryResponse])
-def history(access_token: str | None = Cookie(default=None), db: Session = Depends(get_db)):
-    user = current_user(access_token, db)
+def history(access_token: str | None = Cookie(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    user = current_user(access_token, authorization, db)
     records = db.query(Prediction).filter(Prediction.user_id == user.id).order_by(Prediction.created_at.desc()).all()
     return [{"id": item.id, "fruit": item.fruit, "status": item.status, "confidence": item.confidence, "image_url": item.image_url, "created_at": item.created_at.isoformat(), "ripeness_stage": item.ripeness_stage, "shelf_life_estimate": item.shelf_life_estimate} for item in records]
 
 @router.post("/request-vendor", response_model=VendorRequestResponse)
-def request_vendor(access_token: str | None = Cookie(default=None), db: Session = Depends(get_db)):
-    user = current_user(access_token, db)
+def request_vendor(access_token: str | None = Cookie(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    user = current_user(access_token, authorization, db)
     if user.role == "customer":
         user.role = "vendor"
         db.commit()

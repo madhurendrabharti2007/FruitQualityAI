@@ -1,5 +1,6 @@
 """Fruit Freshness Detector API."""
 import logging
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,8 +20,35 @@ async def lifespan(app: FastAPI):
     logger.info("Ripewise API startup complete")
     yield
 
+def _parse_origins() -> list[str]:
+    raw = os.environ.get("CORS_ALLOW_ORIGINS") or os.environ.get("ALLOWED_ORIGINS")
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    dev = ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176",
+           "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:5176"]
+    prod = [
+        "https://ripewise.vercel.app",
+        "https://fruitqualityai.vercel.app",
+        "https://fruit-quality-ai.vercel.app",
+    ]
+    auto = []
+    vercel_url = os.environ.get("VERCEL_URL")
+    if vercel_url:
+        if not vercel_url.startswith("http"):
+            vercel_url = f"https://{vercel_url}"
+        auto.append(vercel_url)
+    return dev + prod + auto
+
+def _allow_all_origins() -> bool:
+    return (os.environ.get("CORS_ALLOW_ALL", "").lower() in {"1", "true", "yes", "on"})
+
 app = FastAPI(title="Ripewise API", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:5176"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+if _allow_all_origins():
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+else:
+    app.add_middleware(CORSMiddleware, allow_origins=_parse_origins(), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
 app.include_router(predict.router)
 app.include_router(fruits.router)
 app.include_router(auth.router)
@@ -28,7 +56,17 @@ app.include_router(notebook.router)
 app.include_router(chat.router)
 app.include_router(batch.router)
 app.include_router(admin.router)
-app.mount("/uploads", StaticFiles(directory="uploads", check_dir=False), name="uploads")
+
+def _upload_dir() -> str:
+    p = os.environ.get("UPLOAD_DIR") or os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+    try:
+        os.makedirs(p, exist_ok=True)
+    except Exception:
+        p = "/tmp/uploads"
+        os.makedirs(p, exist_ok=True)
+    return p
+
+app.mount("/uploads", StaticFiles(directory=_upload_dir(), check_dir=False), name="uploads")
 
 @app.get("/api/health")
 def health():

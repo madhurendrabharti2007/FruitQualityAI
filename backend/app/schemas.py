@@ -6,6 +6,10 @@ class Info(BaseModel):
     points: list[str]
     disposal_tip: str | None = None
 
+class TopPrediction(BaseModel):
+    fruit: str
+    score: float = Field(ge=0, le=1)
+
 class PredictionResponse(BaseModel):
     fruit: str
     status: str
@@ -14,10 +18,12 @@ class PredictionResponse(BaseModel):
     demo: bool = False
     ripeness_stage: str = "ripe"
     shelf_life_estimate: str = "2-4 days"
+    top_predictions: list[TopPrediction] = Field(default_factory=list)
 
 class NotRecognizedResponse(BaseModel):
     status: str
     message: str
+    top_predictions: list[TopPrediction] = Field(default_factory=list)
 
 class FruitResponse(BaseModel):
     name: str

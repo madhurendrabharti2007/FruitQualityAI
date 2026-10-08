@@ -2,12 +2,18 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.database import init_db
 from app.routers import admin, auth, batch, chat, fruits, notebook, predict
 from app.seed_data import seed
+
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+if _ENV_PATH.exists():
+    load_dotenv(_ENV_PATH)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("ripewise")
@@ -21,23 +27,20 @@ async def lifespan(app: FastAPI):
     yield
 
 def _parse_origins() -> list[str]:
-    raw = os.environ.get("CORS_ALLOW_ORIGINS") or os.environ.get("ALLOWED_ORIGINS")
+    raw = os.environ.get("ALLOWED_ORIGINS") or os.environ.get("CORS_ALLOW_ORIGINS")
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
-    dev = ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176",
-           "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:5176"]
-    prod = [
-        "https://ripewise.vercel.app",
-        "https://fruitqualityai.vercel.app",
-        "https://fruit-quality-ai.vercel.app",
-    ]
-    auto = []
-    vercel_url = os.environ.get("VERCEL_URL")
-    if vercel_url:
-        if not vercel_url.startswith("http"):
-            vercel_url = f"https://{vercel_url}"
-        auto.append(vercel_url)
-    return dev + prod + auto
+    return [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:5176",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175",
+    "http://127.0.0.1:5176",
+    "https://fruit-quality-ai-n41u.vercel.app",
+]
 
 def _allow_all_origins() -> bool:
     return (os.environ.get("CORS_ALLOW_ALL", "").lower() in {"1", "true", "yes", "on"})

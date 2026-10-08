@@ -64,12 +64,17 @@ def user_payload(user: User, token: str | None = None) -> dict:
 
 def set_token(response: Response, user: User) -> str:
     token = jwt.encode({"sub": str(user.id), "exp": datetime.now(timezone.utc) + timedelta(days=TOKEN_DAYS)}, SECRET_KEY, algorithm=ALGORITHM)
-    is_vercel = bool(os.environ.get("VERCEL") or os.environ.get("VERCEL_ENV") or os.environ.get("ENV") == "production")
+    env = (os.environ.get("ENV") or os.environ.get("VERCEL_ENV") or os.environ.get("NODE_ENV") or "development").lower()
+    secure_override = os.environ.get("COOKIE_SECURE")
+    if secure_override is not None:
+        secure_cookie = secure_override.lower() in {"1", "true", "yes", "on"}
+    else:
+        secure_cookie = env in {"production", "prod"} or bool(os.environ.get("VERCEL") or os.environ.get("RENDER"))
     response.set_cookie(
         "access_token", token,
         httponly=True,
         samesite="lax",
-        secure=is_vercel,
+        secure=secure_cookie,
         max_age=TOKEN_DAYS * 86400,
     )
     return token

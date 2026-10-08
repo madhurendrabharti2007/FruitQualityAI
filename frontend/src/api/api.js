@@ -1,6 +1,7 @@
 import axios from 'axios';
 const TOKEN_KEY = 'fruit_ai_access_token';
-export const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || '/api', withCredentials: true });
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+export const api = axios.create({ baseURL: API_BASE_URL, withCredentials: true });
 api.interceptors.request.use(config => {
   try {
     const token = localStorage.getItem(TOKEN_KEY);

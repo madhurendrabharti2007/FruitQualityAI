@@ -38,7 +38,7 @@ cd FruitQualityAI
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 
 cd backend
 # Copy env template and add your keys
@@ -125,7 +125,7 @@ For model-backed predictions, commit both `backend/app/model/saved_model/fruit_q
    - **Branch:** `main` (or your production branch).
    - **Root Directory:** `backend` ← **this is critical.** Render must install from `backend/requirements.txt` and run from the `backend` folder so `app.main:app` resolves.
    - **Runtime:** Python 3
-   - **Build Command:** `pip install -r requirements.txt`
+   - **Build Command:** `pip install -r requirements.txt --break-system-packages`
    - **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
    - **Instance Type:** Free (Starter) is fine to begin with; upgrade if cold boots annoy you.
 6. Click **"Advanced"** and add the following **Environment Variables** (copy values from `backend/.env.example`):
@@ -136,7 +136,7 @@ For model-backed predictions, commit both `backend/app/model/saved_model/fruit_q
    | `ADMIN_TOKEN` | *(something strong, not the default `fruit-admin`)* |
    | `HARDWARE_DEVICE_KEY` | *(something strong, not the default; must match ESP32-CAM if used)* |
    | `ALLOWED_ORIGINS` | **LEAVE BLANK FOR NOW.** You'll come back and fill this in after Part 2 gives you a Vercel URL. |
-   | `PYTHON_VERSION` | `3.12.0` (to match the Dockerfile; if Render complains, just remove this — it auto-detects well) |
+   | `PYTHON_VERSION` | `3.12.0` (required for the pinned TensorFlow 2.18.0 runtime) |
 7. Click **Create Web Service** and wait for the build + deploy (2–5 minutes).
 8. When you see `Your service is live 🎉`, open the provided URL (e.g. `https://fruitqualityai-backend.onrender.com`) and append `/api/health`. You should see `{"status":"ok"}`. **Copy this base URL, you need it in Part 2.**
 

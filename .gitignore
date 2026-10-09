@@ -93,6 +93,8 @@ backend/app/model/saved_model/*.h5
 backend/app/model/saved_model/*.pt
 backend/app/model/saved_model/*.pth
 backend/app/model/saved_model/labels.json
+!backend/app/model/saved_model/fruit_quality.keras
+!backend/app/model/saved_model/labels.json
 !backend/app/model/saved_model/.gitkeep
 
 # Dataset (too large for git)

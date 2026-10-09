@@ -4,10 +4,8 @@ Two paths are supported based on what's available in saved_model/:
 
 A) TensorFlow model loaded from saved_model/fruit_quality.keras + labels.json
    - Input size: 224x224 RGB (MobileNetV2 backbone)
-   - Preprocessing: tf.keras.applications.mobilenet_v2.preprocess_input
-     i.e. pixel values are mapped from [0,255] to [-1.0, 1.0]
-     (NOTE: inference previously used /255 which produced [0,1] inputs and
-      caused garbage predictions; fixed here.)
+   - The model graph includes MobileNetV2 preprocessing, so inference must pass
+     raw [0,255] RGB pixels rather than preprocessing them a second time.
    - Labels format (EITHER layout is accepted, detected automatically):
        * 14 classes, "FruitName_status"  e.g. ["Apple_fresh","Apple_rotten",...]
          -> fruit + status read directly from the label string
@@ -64,8 +62,8 @@ BLURRY_MESSAGE = "This image is too blurry. Please upload a clearer photo."
 # Exact fruit names that the DB/notebook is seeded with (see seed_data.py DATA dict).
 # The classifier MUST only return names from this set, so that _info() and _ripeness()
 # in routers/predict.py always find a DB row.
-SEEDED_FRUITS = {"Apple", "Banana", "Mango", "Orange", "Grapes", "Tomato", "Papaya"}
-SEEDED_FRUITS_LIST = ["Apple", "Banana", "Mango", "Orange", "Grapes", "Tomato", "Papaya"]
+SEEDED_FRUITS = {"Apple", "Banana", "Mango", "Orange", "Grapes", "Tomato", "Papaya", "Pomegranate"}
+SEEDED_FRUITS_LIST = ["Apple", "Banana", "Mango", "Orange", "Grapes", "Tomato", "Papaya", "Pomegranate"]
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +142,7 @@ class FruitPredictor:
             gray = np.array(image.convert("L"), dtype="float32")
             ptp = float(np.ptp(gray))
             std = float(np.std(gray))
-            if ptp < 40 or std < 12:
+            if ptp < 40 or std < 9:
                 logger.warning("Image rejected due to low contrast/variation (ptp=%.1f, std=%.1f)", ptp, std)
                 return False, NOT_RECOGNIZED_MESSAGE
 
@@ -479,6 +477,27 @@ class FruitPredictor:
             ranked, fruit, top_score, margin,
         )
 
+        # Banana vs Mango disambiguation: a bright, yellow-dominant fruit with
+        # very little orange or green should be Banana, not Mango.
+        yellow_band = hue_in(f_hues, 42, 68)
+        yellow_ratio = float(np.mean(yellow_band)) if len(f_hues) else 0.0
+        yellow_sat = float(np.mean(f_sats[yellow_band])) if np.any(yellow_band) else 0.0
+        yellow_brt = float(np.mean(f_bright[yellow_band])) if np.any(yellow_band) else 0.0
+        orange_ratio = float(np.mean(hue_in(f_hues, 18, 42))) if len(f_hues) else 0.0
+        green_ratio = float(np.mean(hue_in(f_hues, 85, 150))) if len(f_hues) else 0.0
+        if yellow_ratio >= 0.30 and yellow_brt >= 0.52 and orange_ratio <= 0.25 and green_ratio <= 0.18:
+            raw_scores["Banana"] = max(raw_scores.get("Banana", 0.0), yellow_ratio * 0.90 + yellow_sat * 0.35)
+            if "Mango" in raw_scores:
+                raw_scores["Mango"] *= 0.35
+            ranked = sorted(raw_scores.items(), key=lambda kv: kv[1], reverse=True)
+            fruit, top_score = ranked[0]
+            second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+            margin = top_score - second_score
+            logger.info(
+                "demo banana-vs-mango override: yellow=%.2f orange=%.2f green=%.2f sat=%.2f brt=%.2f ranked=%s",
+                yellow_ratio, orange_ratio, green_ratio, yellow_sat, yellow_brt, ranked,
+            )
+
         # --- accept/reject gate ------------------------------------------
         absolute_ok = top_score >= MIN_DEMO_ABS_ACCEPT
         relative_ok = margin >= MIN_DEMO_MARGIN
@@ -614,26 +633,19 @@ class FruitPredictor:
             return None, "not_recognized", 0.0, is_demo, quality_message, []
 
         if self.model is not None:
-            import numpy as np
-            import tensorflow as tf
-
-            resized = image.convert("RGB").resize((224, 224))
+            resized = image.convert("RGB").resize((224, 224), Image.Resampling.BILINEAR)
             arr = np.asarray(resized, dtype="float32")
-            # MobileNetV2 maps uint8 [0,255] -> float32 [-1, 1].
-            # Bug fix: previous code did arr/255 -> [0,1] which is WRONG for
-            # MobileNetV2 backbone and caused model to produce garbage
-            # probabilities (out-of-distribution inputs).
             batch = np.expand_dims(arr, 0)
-            preprocessed = tf.keras.applications.mobilenet_v2.preprocess_input(batch)
-            scores = self.model.predict(preprocessed, verbose=0)[0]
+            scores = self.model.predict(batch, verbose=0)[0]
 
-            ranked = list(np.argsort(scores))  # worst..best
+            ranked = list(np.argsort(scores))
             k = min(len(ranked), 5)
             top_idx = ranked[-k:]
             top_idx_desc = list(reversed(top_idx))
             top_scores: list[tuple[str, float]] = []
             for i in top_idx_desc:
-                name = self.label_fruits[int(i)] if int(i) < len(self.label_fruits) else f"class_{i}"
+                label = self.labels[int(i)] if int(i) < len(self.labels) else f"class_{i}"
+                name = self.label_fruits[int(i)] if int(i) < len(self.label_fruits) else label
                 top_scores.append((name, float(scores[i])))
             logger.info("model raw top-5: %s", top_scores)
 
@@ -644,18 +656,32 @@ class FruitPredictor:
 
             if confidence < MIN_MODEL_CONFIDENCE or margin < MIN_MODEL_MARGIN:
                 logger.warning(
-                    "Model prediction rejected: confidence=%.2f < %.2f or margin=%.2f < %.2f. top_scores=%s",
+                    "Model prediction rejected: confidence=%.2f < %.2f or margin=%.2f < %.2f. Falling back to demo classifier. top_scores=%s",
                     confidence, MIN_MODEL_CONFIDENCE, margin, MIN_MODEL_MARGIN, top_scores,
                 )
+                fruit_demo, status_demo, confidence_demo, top_demo = self._classify_demo(image)
+                if fruit_demo is not None and status_demo != "not_recognized" and confidence_demo >= 78.0:
+                    logger.info(
+                        "Using demo classifier after low-confidence model result: %s %s conf=%.1f top=%s",
+                        fruit_demo, status_demo, confidence_demo, top_demo[:3],
+                    )
+                    return fruit_demo, status_demo, confidence_demo, True, "", top_demo
                 return None, "not_recognized", 0.0, False, NOT_RECOGNIZED_MESSAGE, top_scores
 
-            if self.labels_have_status and idx < len(self.labels) and "_" in str(self.labels[idx]):
-                fruit, status = self.labels[idx].rsplit("_", 1)
-                fruit = fruit.replace("_", " ").title().strip()
+            label_name = str(self.labels[idx]) if idx < len(self.labels) else ""
+            if "_" in label_name:
+                fruit_part, status_part = label_name.rsplit("_", 1)
+                fruit = fruit_part.replace("_", " ").title().strip()
+                status = status_part.lower()
+                if fruit == "Pomegranate":
+                    fruit = "Pomegranate"
                 if "grape" in fruit.lower():
                     fruit = "Grapes"
+                if status not in {"good", "bad", "fresh", "rotten"}:
+                    status, _stat_conf = self._status_from_image(image)
+                else:
+                    status = "fresh" if status.lower() in {"good", "fresh"} else "rotten"
             else:
-                # Fruit-only labels: status derived from image blemishes.
                 fruit = self.label_fruits[idx] if idx < len(self.label_fruits) else None
                 if fruit and "grape" in fruit.lower():
                     fruit = "Grapes"

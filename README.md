@@ -113,6 +113,8 @@ Note: the legacy `VITE_API_URL` name still works as a fallback if you set it, bu
 
 Render gives you a free-tier Web Service with a persistent server (not serverless), which is exactly what this backend needs. SQLite disk persistence requires a **Persistent Disk** add-on (~$1-3/mo at time of writing); without one the DB resets on every deploy, which is fine for evaluation but not for real use.
 
+For model-backed predictions, commit both `backend/app/model/saved_model/fruit_quality.keras` and `backend/app/model/saved_model/labels.json`. The current model is about 20 MB, below GitHub's 100 MB per-file limit. Render only receives files included in the pushed commit; if either artifact is missing, the API falls back to the heuristic demo classifier. Do not commit the training dataset.
+
 1. **Push the project to GitHub** (or GitLab / Bitbucket) if it isn't already.
 2. Go to https://dashboard.render.com and sign in.
 3. Click **"New +" → Web Service**.

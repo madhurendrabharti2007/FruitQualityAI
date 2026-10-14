@@ -7,23 +7,25 @@ from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, Cookie, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from app.authz import require_role
 from app.database import BatchScan, BatchScanItem, Fruit, FruitNotebook, SessionLocal, User, get_db
+from app.model.fruit_scope import FruitScopeUnavailable
 from app.model.predict import predictor
 from app.routers.auth import current_user
+from app.routers.image_uploads import save_validated_image
 from app.routers.predict import _info
 from app.schemas import BatchResponse
 
 router = APIRouter(prefix="/api", tags=["batch"])
 UPLOADS = Path(__file__).resolve().parents[2] / "uploads"
-ALLOWED = {"image/jpeg", "image/png", "image/webp"}
 MAX_FILES = 50
-MAX_BYTES = 8 * 1024 * 1024
 
 
 def _shelf(fruit: str | None, status: str) -> tuple[str, str]:
+    if status == "unknown":
+        return "unknown", "-"
     stage = "not_recognized" if status == "not_recognized" else ("ripe" if status == "fresh" else "spoiled")
     if not fruit:
         return stage, "-"
@@ -47,21 +49,26 @@ async def batch_predict(files: list[UploadFile] = File(...), user: User = Depend
     batch_id = str(uuid4())
     stored: list[BatchScanItem] = []
     for file in files:
-        if file.content_type not in ALLOWED:
-            raise HTTPException(415, f"{file.filename or 'A file'} is not a JPG, PNG, or WEBP image.")
-        content = await file.read()
-        if len(content) > MAX_BYTES:
-            raise HTTPException(413, f"{file.filename or 'A file'} is larger than 8 MB.")
         target = UPLOADS / f"batch-{batch_id}-{uuid4().hex}.jpg"
         try:
-            UPLOADS.mkdir(exist_ok=True)
-            target.write_bytes(content)
-            with Image.open(target) as image:
-                image.verify()
-            fruit, status, confidence, _demo, _message = predictor.predict(target)
-        except (UnidentifiedImageError, OSError) as exc:
+            await save_validated_image(file, target)
+            fruit, status, confidence, _demo, _message, _top_predictions = await run_in_threadpool(
+                predictor.predict, target
+            )
+        except HTTPException as exc:
             target.unlink(missing_ok=True)
-            raise HTTPException(400, f"{file.filename or 'A file'} is not a readable image.") from exc
+            if exc.status_code in {400, 413, 415}:
+                raise HTTPException(
+                    exc.status_code,
+                    f"{file.filename or 'A file'}: {exc.detail}",
+                ) from exc
+            raise
+        except FruitScopeUnavailable as exc:
+            target.unlink(missing_ok=True)
+            raise HTTPException(exc.status_code, str(exc)) from exc
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
         stage, shelf = _shelf(fruit, status)
         item = BatchScanItem(batch_id=batch_id, filename=file.filename or target.name, fruit=fruit, status=status, confidence=round(confidence, 1), ripeness_stage=stage, shelf_life_estimate=shelf, image_url=f"/uploads/{target.name}" if status != "not_recognized" else None)
         stored.append(item)

@@ -9,7 +9,7 @@ This project uses a **split deployment** by design:
 - **Frontend (React + Vite) → deployed on Vercel.** Vercel is ideal for static SPAs: fast CDN, preview deployments, Git integration.
 - **Backend (FastAPI + SQLite + ML libraries) → deployed on Render (or Railway / Fly.io / any persistent server).** The backend needs a long-running process, not Vercel's serverless functions, because:
   1. SQLite must persist between requests (serverless `/tmp` is ephemeral).
-  2. ML / image-processing libraries (NumPy, Pillow, optional TensorFlow, google-genai) are too large and cold-start too slowly for serverless.
+   2. Image decoding and Gemini Vision requests need a long-running API process.
   3. The ESP32-CAM `/api/hardware-predict` endpoint expects a stable, always-listening server.
 
 If you previously tried deploying both halves on Vercel, that's why nothing persisted — this split layout fixes it completely.
@@ -18,7 +18,7 @@ If you previously tried deploying both halves on Vercel, that's why nothing pers
 
 - React + Vite + Tailwind CSS + Framer Motion
 - FastAPI + SQLAlchemy + SQLite
-- TensorFlow/Keras MobileNetV2 training pipeline
+- Gemini Vision fruit and quality classification
 - Local image uploads during development
 - JWT + HttpOnly cookie auth (with `Authorization: Bearer` fallback for cross-origin)
 - Optional cookie-based accounts and private scan history
@@ -85,7 +85,8 @@ Set these in **Render → your Web Service → Environment** (or in `backend/.en
 
 | Variable | Required? | Default | Description |
 |---|---|---|---|
-| `GEMINI_API_KEY` | Recommended | *(none)* | Free key from https://aistudio.google.com/apikey. Powers the notebook-grounded fruit assistant chat. Without it the assistant shows a setup message but all other features work. |
+| `GEMINI_API_KEY` | **Required for predictions and chat** | *(none)* | Key from https://aistudio.google.com/apikey. Used only by the backend for supported-fruit image validation and notebook-grounded chat. Never set this as a `VITE_` frontend variable. |
+| `GEMINI_MODEL` | Optional | `gemini-3.6-flash` | Model used by backend Gemini image validation and chat. |
 | `JWT_SECRET` | **Yes in prod** | `change-this-development-secret` | Long random string used to sign HttpOnly access tokens. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. |
 | `ADMIN_TOKEN` | Optional | `fruit-admin` | Shared secret for direct CRUD on `/api/fruits/*`; sent via the `X-Admin-Token` header. |
 | `HARDWARE_DEVICE_KEY` | Optional | `esp32-cam-default-key` | Shared secret for the ESP32-CAM device endpoint (`/api/hardware-predict`). Must match the key sent by the device. |
@@ -96,6 +97,16 @@ Set these in **Render → your Web Service → Environment** (or in `backend/.en
 | `DATABASE_URL` / `SQLITE_DB_PATH` | Optional | `backend/fruit_quality.db` | Override the SQLite file path, e.g. `sqlite:////data/fruit_quality.db` on Render with a persistent disk. |
 | `SQLITE_DB_DIR` | Optional | `backend/` | Directory for the SQLite file if you don't set the full URL. On Render point this at your persistent disk mount. |
 | `UPLOAD_DIR` | Optional | `backend/uploads` | Where captured/uploaded photos are stored. On Render point this at your persistent disk mount. |
+| `FRUIT_DETECTION_THRESHOLD` | Optional | calibrated model value | Supported-fruit probability cutoff. Override only after validation-set calibration. |
+| `UNSUPPORTED_FRUIT_THRESHOLD` | Optional | calibrated model value | Unsupported-fruit probability cutoff. Override only after validation-set calibration. |
+| `QUALITY_MIN_CONFIDENCE` | Optional | `0.60` | Minimum top-class probability from the existing eight-class quality model. |
+| `QUALITY_MIN_MARGIN` | Optional | `0.10` | Minimum probability gap between the top two quality classes. |
+
+### Gemini Vision
+
+The signed-in `POST /api/predict` and vendor-only `POST /api/batch-predict` routes validate image type, decoded format, dimensions, and the 8 MB upload limit before running Gemini Vision. Gemini is called only by the backend using `GEMINI_API_KEY`; the frontend must never define a `VITE_GEMINI_API_KEY`. Set the key in `backend/.env` for local development or in the backend service environment on Render. Low-confidence or invalid Gemini responses are rejected before the fruit-quality model runs.
+
+The single-image page previews a selected JPG, PNG, or WEBP image, shows a loading state while prediction is running, then displays either the quality result or a clear rejection/error message. Run the backend checks with `cd backend && python -m unittest discover -s tests -v`.
 
 ### Frontend (`frontend/.env` / Vercel Environment)
 
@@ -113,7 +124,16 @@ Note: the legacy `VITE_API_URL` name still works as a fallback if you set it, bu
 
 Render gives you a free-tier Web Service with a persistent server (not serverless), which is exactly what this backend needs. SQLite disk persistence requires a **Persistent Disk** add-on (~$1-3/mo at time of writing); without one the DB resets on every deploy, which is fine for evaluation but not for real use.
 
-For model-backed predictions, commit both `backend/app/model/saved_model/fruit_quality.keras` and `backend/app/model/saved_model/labels.json`. The current model is about 20 MB, below GitHub's 100 MB per-file limit. Render only receives files included in the pushed commit; if either artifact is missing, the API falls back to the heuristic demo classifier. Do not commit the training dataset.
+Predictions use one Gemini Vision request and require `GEMINI_API_KEY` configured in Render's backend environment. Classification failures fail closed. Do not commit API keys or test datasets.
+
+Local safety checks:
+
+```bash
+cd backend
+python -m unittest discover -s tests -v
+```
+
+These checks cover image decoding, upload limits, Gemini response validation, confidence rejection, and upstream error mapping. Before deployment, exercise `POST /api/predict` with a signed-in account using fruit, non-fruit, and unclear images.
 
 1. **Push the project to GitHub** (or GitLab / Bitbucket) if it isn't already.
 2. Go to https://dashboard.render.com and sign in.
@@ -124,9 +144,11 @@ For model-backed predictions, commit both `backend/app/model/saved_model/fruit_q
    - **Region:** pick the closest one to your users.
    - **Branch:** `main` (or your production branch).
    - **Root Directory:** `backend` ← **this is critical.** Render must install from `backend/requirements.txt` and run from the `backend` folder so `app.main:app` resolves.
+      - **Root Directory:** `backend` ← **this is critical.** Render must install from `backend/requirements.txt` and run from the `backend` folder so `main:app` resolves.
    - **Runtime:** Python 3
    - **Build Command:** `pip install -r requirements.txt --break-system-packages`
    - **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+      - **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
    - **Instance Type:** Free (Starter) is fine to begin with; upgrade if cold boots annoy you.
 6. Click **"Advanced"** and add the following **Environment Variables** (copy values from `backend/.env.example`):
    | Key | Value |
@@ -136,7 +158,7 @@ For model-backed predictions, commit both `backend/app/model/saved_model/fruit_q
    | `ADMIN_TOKEN` | *(something strong, not the default `fruit-admin`)* |
    | `HARDWARE_DEVICE_KEY` | *(something strong, not the default; must match ESP32-CAM if used)* |
    | `ALLOWED_ORIGINS` | **LEAVE BLANK FOR NOW.** You'll come back and fill this in after Part 2 gives you a Vercel URL. |
-   | `PYTHON_VERSION` | `3.12.0` (required for the pinned TensorFlow 2.18.0 runtime) |
+   | `PYTHON_VERSION` | `3.12.0` |
 7. Click **Create Web Service** and wait for the build + deploy (2–5 minutes).
 8. When you see `Your service is live 🎉`, open the provided URL (e.g. `https://fruitqualityai-backend.onrender.com`) and append `/api/health`. You should see `{"status":"ok"}`. **Copy this base URL, you need it in Part 2.**
 
@@ -187,28 +209,9 @@ Or locally against a live DB if you have the disk mounted. Admin accounts unlock
 ---
 
 ## Train on your dataset
+## Fruit classification
 
-Put images into this exact layout:
-
-```text
-backend/dataset/
-  Apple/fresh/*.jpg
-  Apple/rotten/*.jpg
-  Banana/fresh/*.jpg
-  Banana/rotten/*.jpg
-```
-
-Use the same pattern for each fruit. The existing `FruitNet_Processed Images` archive can be reorganized into this layout by mapping `Good Quality_Fruits/Apple_Good` to `Apple/fresh` and `Bad Quality_Fruits/Apple_Bad` to `Apple/rotten` (and so on). Keep at least two classes, with both statuses represented.
-
-Install the optional ML dependency and train:
-
-```bash
-cd backend
-pip install tensorflow==2.18.0
-python -m app.model.train
-```
-
-Training creates `backend/app/model/saved_model/fruit_quality.keras` and `labels.json`. Restart FastAPI afterward; the predictor automatically loads those files. The training script uses augmentation, a deterministic 80/10/10-style train/holdout split, a frozen MobileNetV2 head stage, and optional low-learning-rate fine-tuning of the last base layers.
+Each prediction uses one Gemini Vision request to identify the fruit and assess visible quality. Configure `GEMINI_API_KEY` on the backend; the model can be overridden with `GEMINI_MODEL`.
 
 ## API
 

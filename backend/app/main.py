@@ -2,22 +2,20 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("ripewise")
 
-from dotenv import load_dotenv
+from app.config import load_backend_env
+
+load_backend_env()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.database import init_db
 from app.routers import admin, auth, batch, chat, fruits, notebook, predict
 from app.seed_data import seed
-
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-if _ENV_PATH.exists():
-    load_dotenv(_ENV_PATH)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

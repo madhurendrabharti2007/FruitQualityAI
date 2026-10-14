@@ -50,24 +50,27 @@ function NutritionLabel({ facts }) {
 export default function ResultCard({ result, onReset }) {
   const [entry, setEntry] = useState(null);
   const fresh = result.status === 'fresh';
+  const rotten = result.status === 'rotten';
+  const qualityLabel = fresh ? 'Fresh' : rotten ? 'Rotten' : 'Quality unclear';
+  const resultClass = fresh ? 'result-fresh' : rotten ? 'result-rotten' : 'result-neutral';
 
   useEffect(() => {
-    if (result.status === 'not_recognized') { setEntry(null); return; }
+    if (result.status === 'not_recognized' || result.status === 'unknown') { setEntry(null); return; }
     getNotebookEntry(result.fruit).then(setEntry).catch(() => {});
   }, [result.status, result.fruit]);
 
   if (result.status === 'not_recognized') return (
     <motion.section className="result-card result-neutral" initial={{ opacity: 0, y: 22 }} animate={{ opacity: 1, y: 0 }}>
       <div className="neutral-icon"><ScanSearch size={27} /></div>
-      <p className="eyebrow">No clear fruit found</p>
-      <h2>Try a clearer photo.</h2>
-      <p>{result.message}</p>
+      <p className="eyebrow">Image not accepted</p>
+      <h2>Try another image.</h2>
+      <p>{result.message || 'No supported fruit detected. Please upload an image of an apple, banana, orange, or pomegranate.'}</p>
       <button className="primary-button" onClick={onReset}>Try another photo <ArrowRight size={16} /></button>
     </motion.section>
   );
 
   return (
-    <motion.section className={`result-card ${fresh ? 'result-fresh' : 'result-rotten'}`} initial={{ opacity: 0, y: 22 }} animate={{ opacity: 1, y: 0 }}>
+    <motion.section className={`result-card ${resultClass}`} initial={{ opacity: 0, y: 22 }} animate={{ opacity: 1, y: 0 }}>
       <div className="result-top">
         <div>
           <p className="eyebrow">Looks like</p>
@@ -75,7 +78,7 @@ export default function ResultCard({ result, onReset }) {
         </div>
         <div className="status-badge">
           {fresh ? <Check size={19} /> : <AlertTriangle size={19} />}
-          {fresh ? 'Fresh' : 'Rotten'}
+          {qualityLabel}
         </div>
       </div>
 
@@ -88,11 +91,11 @@ export default function ResultCard({ result, onReset }) {
         </div>
         <div>
           <p className="eyebrow">Signal strength</p>
-          <p className="confidence-copy">Our model is {result.confidence > 80 ? 'quite certain' : 'still getting a read'} about this result.</p>
+            <p className="confidence-copy">Gemini is {result.confidence >= 80 ? 'confident' : 'still getting a read'} about this result.</p>
         </div>
       </div>
 
-      <div className="result-meta">
+    {result.status !== 'unknown' && <div className="result-meta">
         <span>
           <small>Ripeness</small>
           <strong>{result.ripeness_stage || (fresh ? 'ripe' : 'spoiled')}</strong>
@@ -101,7 +104,7 @@ export default function ResultCard({ result, onReset }) {
           <small>Shelf life estimate</small>
           <strong>{result.shelf_life_estimate || (fresh ? '2-4 days' : '0 days')}</strong>
         </span>
-      </div>
+      </div>}
 
       {entry?.nutrition_facts && <NutritionLabel facts={entry.nutrition_facts} />}
 
@@ -116,7 +119,7 @@ export default function ResultCard({ result, onReset }) {
         </div>
       )}
 
-      <div className="info-block">
+    {result.status !== 'unknown' && <div className="info-block">
         <div className="info-heading">
           {fresh ? <Sparkles size={18} /> : <ShieldAlert size={18} />}
           <h3>{fresh ? `Why ${result.fruit} is a good pick` : `A note about this ${result.fruit.toLowerCase()}`}</h3>
@@ -135,9 +138,10 @@ export default function ResultCard({ result, onReset }) {
             <p>{result.info.disposal_tip}</p>
           </div>
         )}
-      </div>
 
-      {entry && (
+      </div>}
+
+    {entry && (
         <div className={`result-notebook ${fresh ? '' : 'result-warning'}`}>
           <div className="info-heading">
             {fresh ? <Sparkles size={18} /> : <AlertTriangle size={18} />}
@@ -192,7 +196,6 @@ export default function ResultCard({ result, onReset }) {
         </div>
       )}
 
-      {result.demo && <p className="demo-note">Demo mode is active. Add trained weights for production predictions.</p>}
       <button className="text-button" onClick={onReset}>Scan another fruit <ArrowRight size={16} /></button>
     </motion.section>
   );

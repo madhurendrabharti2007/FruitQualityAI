@@ -36,7 +36,7 @@ export default function UploadCard({ onPredict, busy }) {
   const choose = selected => {
     const next = selected?.[0];
     if (!next) return;
-    if (!next.type.startsWith('image/') || next.size > 8 * 1024 * 1024) {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(next.type) || next.size === 0 || next.size > 8 * 1024 * 1024) {
       setError('Choose a JPG, PNG, or WEBP image under 8 MB.');
       return;
     }

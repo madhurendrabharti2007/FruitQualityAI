@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowLeft, BookOpen, CalendarClock, Check, Leaf, Refrige
 import { Link, useParams } from 'react-router-dom';
 import { getNotebookEntry } from '../api/api';
 
-const fruitEmoji = { Apple: '🍎', Banana: '🍌', Mango: '🥭', Orange: '🍊', Grapes: '🍇', Tomato: '🍅', Papaya: '🍈' };
+const fruitEmoji = { Apple: '🍎', Banana: '🍌', Mango: '🥭', Orange: '🍊', Grapes: '🍇', Tomato: '🍅', Papaya: '🍈', Pomegranate: '🍈' };
 
 function NutritionLabel({ facts }) {
   if (!facts || !facts.serving) return null;

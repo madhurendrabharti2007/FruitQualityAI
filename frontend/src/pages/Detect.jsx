@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { LockKeyhole, ArrowRight } from 'lucide-react';
@@ -13,8 +13,11 @@ export default function Detect() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const inFlight = useRef(false);
 
   const submit = async file => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError('');
     try {
@@ -27,6 +30,7 @@ export default function Detect() {
             : 'The detector could not process that image.')
       );
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };

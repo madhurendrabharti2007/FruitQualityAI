@@ -6,23 +6,25 @@ import logging
 import os
 from pathlib import Path
 from uuid import uuid4
+from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, Cookie, Depends, File, Header, HTTPException, UploadFile
-from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 from app.database import Fruit, FruitNotebook, Prediction, SessionLocal, get_db, User
 from app.model.predict import predictor, BLURRY_MESSAGE, NOT_RECOGNIZED_MESSAGE
+from app.model.fruit_scope import FruitScopeUnavailable
+from app.routers.image_uploads import save_validated_image
 from app.schemas import NotRecognizedResponse, PredictionResponse, TopPrediction
 from app.routers.auth import decode_token, current_user
 
 router = APIRouter(prefix="/api", tags=["prediction"])
 logger = logging.getLogger(__name__)
 UPLOADS = Path(__file__).resolve().parents[2] / "uploads"
-ALLOWED = {"image/jpeg", "image/png", "image/webp"}
-MAX_BYTES = 8 * 1024 * 1024
 HARDWARE_DEVICE_KEY = os.getenv("HARDWARE_DEVICE_KEY", "esp32-cam-default-key")
 
 
 def _info(fruit: str, status: str):
+    if status == "unknown":
+        return {"title": f"{fruit} quality unclear", "points": [], "disposal_tip": None}
     db = SessionLocal()
     try:
         record = db.get(Fruit, fruit)
@@ -38,6 +40,8 @@ def _info(fruit: str, status: str):
 
 
 def _ripeness(fruit: str, status: str) -> tuple[str, str]:
+    if status == "unknown":
+        return "unknown", "-"
     stage = "ripe" if status == "fresh" else "spoiled"
     db = SessionLocal()
     try:
@@ -66,30 +70,24 @@ async def predict(
     user = current_user(token, authorization, db)
     target = None
     try:
-        if file.content_type not in ALLOWED:
-            raise HTTPException(415, "Please upload a JPG, PNG, or WEBP image.")
-        content = await file.read()
-        if len(content) > MAX_BYTES:
-            raise HTTPException(413, "Images must be smaller than 8 MB.")
-        UPLOADS.mkdir(exist_ok=True)
         target = UPLOADS / f"{uuid4().hex}.jpg"
-        target.write_bytes(content)
-        with Image.open(target) as image:
-            image.verify()
+        await save_validated_image(file, target)
 
         logger.info("Starting prediction for file: %s by user: %s", file.filename, user.id)
-        result = predictor.predict(target)
+        result = await run_in_threadpool(predictor.predict, target)
         fruit, status, confidence, demo, message, top_scores = result
         logger.info(
             "Prediction result - fruit=%s status=%s confidence=%.1f demo=%s message=%s top=%s",
             fruit, status, confidence, demo, message, top_scores[:3],
         )
-    except (UnidentifiedImageError, OSError) as exc:
+    except HTTPException:
         if target:
             target.unlink(missing_ok=True)
-        raise HTTPException(400, "That file is not a readable image.") from exc
-    except HTTPException:
         raise
+    except FruitScopeUnavailable as exc:
+        if target:
+            target.unlink(missing_ok=True)
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except Exception as exc:
         if target:
             target.unlink(missing_ok=True)
@@ -148,29 +146,25 @@ async def hardware_predict(
         raise HTTPException(401, "Invalid device key.")
     target = None
     try:
-        if file.content_type not in ALLOWED and (file.content_type is None or file.content_type not in ALLOWED):
-            raise HTTPException(415, "Please upload a JPG, PNG, or WEBP image.")
-        content = await file.read()
-        if len(content) > MAX_BYTES:
-            raise HTTPException(413, "Images must be smaller than 8 MB.")
-        UPLOADS.mkdir(exist_ok=True)
         target = UPLOADS / f"hw-{uuid4().hex}.jpg"
-        target.write_bytes(content)
-        with Image.open(target) as image:
-            image.verify()
+        await save_validated_image(file, target)
 
         logger.info("Hardware prediction starting for file: %s", file.filename)
-        fruit, status, confidence, demo, message, top_scores = predictor.predict(target)
+        fruit, status, confidence, demo, message, top_scores = await run_in_threadpool(
+            predictor.predict, target
+        )
         logger.info(
             "Hardware prediction result - fruit=%s status=%s confidence=%.1f top=%s",
             fruit, status, confidence, top_scores[:3],
         )
-    except (UnidentifiedImageError, OSError) as exc:
+    except HTTPException:
         if target:
             target.unlink(missing_ok=True)
-        raise HTTPException(400, "Not a readable image.") from exc
-    except HTTPException:
         raise
+    except FruitScopeUnavailable as exc:
+        if target:
+            target.unlink(missing_ok=True)
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except Exception as exc:
         if target:
             target.unlink(missing_ok=True)

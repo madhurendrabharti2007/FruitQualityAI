@@ -27,6 +27,7 @@ venv/
 ENV/
 env/
 .python-version
+!.python-version
 
 # IDE
 .vscode/
@@ -87,14 +88,6 @@ test_*.png
 hw_test.py
 smoke_test.py
 
-# Trained model artifacts (optional & large)
-backend/app/model/saved_model/*.keras
-backend/app/model/saved_model/*.h5
-backend/app/model/saved_model/*.pt
-backend/app/model/saved_model/*.pth
-backend/app/model/saved_model/labels.json
-!backend/app/model/saved_model/fruit_quality.keras
-!backend/app/model/saved_model/labels.json
 !backend/app/model/saved_model/.gitkeep
 
 # Dataset (too large for git)

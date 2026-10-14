@@ -3,7 +3,7 @@ import { BookOpen, Search, ArrowUpRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { getNotebook } from '../api/api';
 
-const fruitEmoji = { Apple: '🍎', Banana: '🍌', Mango: '🥭', Orange: '🍊', Grapes: '🍇', Tomato: '🍅', Papaya: '🍈' };
+const fruitEmoji = { Apple: '🍎', Banana: '🍌', Mango: '🥭', Orange: '🍊', Grapes: '🍇', Tomato: '🍅', Papaya: '🍈', Pomegranate: '🍈' };
 
 export default function Notebook() {
   const [entries, setEntries] = useState([]); const [state, setState] = useState('loading');

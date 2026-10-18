@@ -87,9 +87,10 @@ Set these in **Render → your Web Service → Environment** (or in `backend/.en
 |---|---|---|---|
 | `GEMINI_API_KEY` | **Required for predictions and chat** | *(none)* | Key from https://aistudio.google.com/apikey. Used only by the backend for supported-fruit image validation and notebook-grounded chat. Never set this as a `VITE_` frontend variable. |
 | `GEMINI_MODEL` | Optional | `gemini-3.6-flash` | Model used by backend Gemini image validation and chat. |
+| `GEMINI_MODELS` | Optional | `gemini-3.5-flash,gemini-flash-latest` | Ordered image-validation fallbacks after `GEMINI_MODEL`. |
 | `JWT_SECRET` | **Yes in prod** | `change-this-development-secret` | Long random string used to sign HttpOnly access tokens. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. |
 | `ADMIN_TOKEN` | Optional | `fruit-admin` | Shared secret for direct CRUD on `/api/fruits/*`; sent via the `X-Admin-Token` header. |
-| `HARDWARE_DEVICE_KEY` | Optional | `esp32-cam-default-key` | Shared secret for the ESP32-CAM device endpoint (`/api/hardware-predict`). Must match the key sent by the device. |
+| `HARDWARE_DEVICE_KEY` | Required when using hardware endpoints | *(no default)* | Shared secret sent by ESP32 devices in the `X-Device-Key` header. The backend refuses missing keys and the `esp32-cam-default-key` placeholder. |
 | `ALLOWED_ORIGINS` | **Yes in prod** | *(localhost defaults)* | Comma-separated list of frontend origins that may call the API. Example: `https://fruitqualityai.vercel.app` or multiple: `https://fruitqualityai.vercel.app,https://app.example.com`. **Once you have a Vercel URL you must set this — otherwise CORS blocks the frontend.** |
 | `CORS_ALLOW_ALL` | Optional | *(false)* | Set to `true` to allow every origin (disables credentials/cookies). Useful for temporary debugging only. |
 | `COOKIE_SECURE` | Optional | *(auto)* | Override the `Secure` flag on the auth cookie. Set to `true` if you're on HTTPS behind a proxy that doesn't set the `RENDER` env var or `ENV=production`. |
@@ -124,7 +125,7 @@ Note: the legacy `VITE_API_URL` name still works as a fallback if you set it, bu
 
 Render gives you a free-tier Web Service with a persistent server (not serverless), which is exactly what this backend needs. SQLite disk persistence requires a **Persistent Disk** add-on (~$1-3/mo at time of writing); without one the DB resets on every deploy, which is fine for evaluation but not for real use.
 
-Predictions use one Gemini Vision request and require `GEMINI_API_KEY` configured in Render's backend environment. Classification failures fail closed. Do not commit API keys or test datasets.
+Predictions use Gemini Vision and require `GEMINI_API_KEY` configured in Render's backend environment. Requests use a bounded retry budget; validation failures fail closed. Do not commit API keys or test datasets.
 
 Local safety checks:
 
@@ -211,13 +212,16 @@ Or locally against a live DB if you have the disk mounted. Admin accounts unlock
 ## Train on your dataset
 ## Fruit classification
 
-Each prediction uses one Gemini Vision request to identify the fruit and assess visible quality. Configure `GEMINI_API_KEY` on the backend; the model can be overridden with `GEMINI_MODEL`.
+Gemini Vision identifies supported fruit and assesses visible quality. Configure `GEMINI_API_KEY` on the backend; `GEMINI_MODEL` selects the primary model, while optional ordered `GEMINI_MODELS` values are tried as fallbacks. Validation has a 25-second total request budget and accepts Apple, Banana, Orange, and Pomegranate only.
 
 ## API
 
 - `GET /api/health`
 - `POST /api/predict` with multipart field `file`
-- `POST /api/hardware-predict` for ESP32-CAM devices (authenticated via `X-Hardware-Device-Key` header)
+- `POST /api/hardware-predict` for ESP32-CAM devices (authenticated via `X-Device-Key`)
+- `GET /api/hardware/command` polls the latest prediction command (`X-Device-Key`)
+- `POST /api/hardware/ir` posts `{"object_detected": true}` or `{"object_detected": false}` (`X-Device-Key`)
+- `GET /api/hardware/ir-status` returns the latest IR reading (signed-in cookie or `Authorization: Bearer <token>`)
 - `GET /api/fruits`
 - `GET /api/notebook` and `GET /api/notebook/{fruit_id}`
 - `POST /api/chat` for notebook-grounded fruit questions
@@ -226,6 +230,8 @@ Each prediction uses one Gemini Vision request to identify the fruit and assess 
 - `POST`, `PUT /api/fruits/{name}`, and `DELETE /api/fruits/{name}` with `X-Admin-Token`
 
 Uploads are restricted to JPG, PNG, or WEBP and 8 MB. SQLite is created at `backend/fruit_quality.db` on first run.
+
+The command poll returns `{"id": 0, "action": "none"}` before the first successful prediction. Thereafter it returns `{"id": 1, "action": "accept", "fruit_name": "Apple", "quality": "fresh"}` (with the ID incrementing for each successful prediction). The device can send the device key header over HTTPS without cookies. The IR status response is `{"object_detected": true, "seconds_since_update": 1.234}`; `seconds_since_update` is `null` until an IR update is received.
 
 ### Account endpoints
 

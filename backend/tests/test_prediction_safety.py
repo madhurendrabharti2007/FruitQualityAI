@@ -103,6 +103,7 @@ class GeminiPredictionTests(unittest.TestCase):
         client = SimpleNamespace(models=SimpleNamespace(generate_content=Mock(return_value="response")))
         client_factory = Mock(return_value=client)
         options_factory = Mock(return_value="http-options")
+        retry_options_factory = Mock(return_value="retry-options")
         config_factory = Mock(return_value="generation-config")
         thinking_config_factory = Mock(return_value="thinking-config")
         parts = SimpleNamespace(from_bytes=Mock(return_value="image-part"), from_text=Mock(return_value="prompt-part"))
@@ -110,6 +111,7 @@ class GeminiPredictionTests(unittest.TestCase):
         genai_module.Client = client_factory
         types_module = ModuleType("google.genai.types")
         types_module.HttpOptions = options_factory
+        types_module.HttpRetryOptions = retry_options_factory
         types_module.GenerateContentConfig = config_factory
         types_module.ThinkingConfig = thinking_config_factory
         types_module.ThinkingLevel = SimpleNamespace(MINIMAL="MINIMAL")
@@ -133,7 +135,10 @@ class GeminiPredictionTests(unittest.TestCase):
             )
 
         self.assertEqual(response, "response")
-        options_factory.assert_called_once_with(timeout=20_000)
+        retry_options_factory.assert_called_once_with(attempts=1)
+        options_factory.assert_called_once_with(
+            timeout=20_000, retry_options="retry-options"
+        )
         thinking_config_factory.assert_called_once_with(thinking_level="MINIMAL")
         config_factory.assert_called_once_with(
             response_mime_type="application/json",
@@ -167,6 +172,7 @@ class GeminiPredictionTests(unittest.TestCase):
         genai_module.Client = Mock(return_value=client)
         types_module = ModuleType("google.genai.types")
         types_module.HttpOptions = Mock(return_value="http-options")
+        types_module.HttpRetryOptions = Mock(return_value="retry-options")
         types_module.GenerateContentConfig = config_factory
         types_module.Part = SimpleNamespace(
             from_bytes=Mock(return_value="image-part"),
@@ -205,7 +211,8 @@ class GeminiPredictionTests(unittest.TestCase):
 
     def test_request_and_total_time_budgets(self) -> None:
         self.assertEqual(fruit_scope.MAX_REQUEST_TIMEOUT_MS, 20_000)
-        self.assertEqual(fruit_scope.MAX_TOTAL_SECONDS, 45.0)
+        self.assertEqual(fruit_scope.MAX_TOTAL_SECONDS, 25.0)
+        self.assertEqual(fruit_scope.MAX_TOTAL_ATTEMPTS, 3)
 
     def test_nonfruit_and_low_confidence_never_return_a_fruit_name(self) -> None:
         predictor = predict_module.FruitPredictor()
@@ -234,6 +241,23 @@ class GeminiPredictionTests(unittest.TestCase):
         )
         self.assertEqual(result["fruit_name"], "")
         self.assertEqual(result["quality"], "unknown")
+
+    def test_only_supported_fruits_are_accepted(self) -> None:
+        for fruit in ("Apple", "Banana", "Orange", "Pomegranate"):
+            with self.subTest(fruit=fruit):
+                result = FruitVisionClassifier._validate_payload(
+                    fruit_payload(fruit_name=fruit)
+                )
+                self.assertTrue(result["is_fruit"])
+                self.assertEqual(result["fruit_name"], fruit)
+                self.assertEqual(result["quality"], "fresh")
+
+        unsupported = FruitVisionClassifier._validate_payload(
+            fruit_payload(fruit_name="Mango", quality="rotten")
+        )
+        self.assertFalse(unsupported["is_fruit"])
+        self.assertEqual(unsupported["fruit_name"], "")
+        self.assertEqual(unsupported["quality"], "unknown")
 
     def test_rejects_invalid_or_non_strict_payloads(self) -> None:
         for payload in (
@@ -349,27 +373,41 @@ class GeminiPredictionTests(unittest.TestCase):
         self.assertNotIn(token, message)
         self.assertIn("[REDACTED]", message)
 
-    def test_only_401_and_403_are_mapped_to_api_key_setting(self) -> None:
+    def test_permanent_statuses_map_to_the_correct_configuration_setting(self) -> None:
         classifier = FruitVisionClassifier()
         self.assertEqual(classifier._invalid_setting(RuntimeError("anything"), 401), "GEMINI_API_KEY")
         self.assertEqual(classifier._invalid_setting(RuntimeError("anything"), 403), "GEMINI_API_KEY")
+        self.assertEqual(classifier._invalid_setting(RuntimeError("anything"), 404), "GEMINI_MODEL")
         self.assertIsNone(classifier._invalid_setting(RuntimeError("model not found"), 400))
-        for status in (400, 401, 403):
+        for status in (400, 401, 403, 404):
             error = RuntimeError("request failed")
             error.code = status
             self.assertFalse(classifier._is_retryable(error))
+        for status in (500, 502):
+            error = RuntimeError("temporary upstream error")
+            error.code = status
+            self.assertTrue(classifier._is_retryable(error))
+        self.assertTrue(classifier._is_retryable(ConnectionError("network unavailable")))
         unavailable = RuntimeError("503 UNAVAILABLE: high demand")
         unavailable.code = "UNAVAILABLE"
         self.assertEqual(classifier._upstream_status(unavailable), 503)
         self.assertTrue(classifier._is_retryable(unavailable))
 
-    def test_model_list_reads_ordered_environment_values(self) -> None:
-        with patch.dict(os.environ, {"GEMINI_MODELS": " first-model,second-model, first-model "}):
-            self.assertEqual(FruitVisionClassifier._models(), ("first-model", "second-model"))
-        with patch.dict(os.environ, {"GEMINI_MODELS": ""}):
+    def test_model_list_uses_documented_primary_then_ordered_fallbacks(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_MODEL": "primary-model",
+                "GEMINI_MODELS": " first-fallback,primary-model,second-fallback ",
+            },
+        ):
             self.assertEqual(
                 FruitVisionClassifier._models(),
-                ("gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest"),
+                ("primary-model", "first-fallback", "second-fallback"),
+            )
+        with patch.dict(os.environ, {"GEMINI_MODEL": "", "GEMINI_MODELS": ""}):
+            self.assertEqual(
+                FruitVisionClassifier._models(), fruit_scope.DEFAULT_GEMINI_MODELS
             )
 
     def test_503_retries_first_model_and_logs_successful_model(self) -> None:
@@ -431,6 +469,60 @@ class GeminiPredictionTests(unittest.TestCase):
 
         self.assertEqual(result["fruit_name"], "Apple")
         self.assertEqual(calls, ["primary-model", "primary-model", "fallback-model"])
+
+    def test_transient_failures_are_capped_across_all_models(self) -> None:
+        class ServiceUnavailable(RuntimeError):
+            code = 503
+
+        classifier = FruitVisionClassifier()
+        models = ("model-one", "model-two", "model-three", "model-four")
+        calls = []
+
+        def generate(_image_bytes, _prompt, model, _timeout_ms):
+            calls.append(model)
+            raise ServiceUnavailable("high demand")
+
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "input.jpg"
+            image_path.write_bytes(jpeg_bytes())
+            with (
+                patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}),
+                patch.object(classifier, "_models", return_value=models),
+                patch.object(classifier, "_generate_content", side_effect=generate),
+                patch.object(fruit_scope.time, "sleep") as sleep,
+                self.assertLogs("app.model.fruit_scope", level="ERROR"),
+                self.assertRaises(FruitScopeUnavailable) as raised,
+            ):
+                classifier.classify(image_path)
+
+        self.assertEqual(calls, ["model-one", "model-one", "model-two"])
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(raised.exception.status_code, 503)
+
+    def test_model_not_found_is_not_retried_and_maps_to_configuration_error(self) -> None:
+        class ModelNotFoundError(RuntimeError):
+            code = 404
+
+        classifier = FruitVisionClassifier()
+        with (
+            patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}),
+            patch.object(classifier, "_models", return_value=("bad-model", "fallback")),
+            patch.object(
+                classifier,
+                "_generate_content",
+                side_effect=ModelNotFoundError("model not found"),
+            ) as generate,
+            self.assertLogs("app.model.fruit_scope", level="ERROR") as logs,
+            self.assertRaises(FruitScopeUnavailable) as raised,
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                image_path = Path(directory) / "input.jpg"
+                image_path.write_bytes(jpeg_bytes())
+                classifier.classify(image_path)
+
+        self.assertEqual(generate.call_count, 1)
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertIn("invalid_setting=GEMINI_MODEL", "\n".join(logs.output))
 
 
 if __name__ == "__main__":

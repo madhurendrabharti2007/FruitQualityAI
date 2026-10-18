@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import json
+import hmac
 import logging
 import os
 from pathlib import Path
+from threading import Lock
+from datetime import datetime, timezone
+from typing import Literal, TypedDict
 from uuid import uuid4
 from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, Cookie, Depends, File, Header, HTTPException, UploadFile
+from pydantic import BaseModel, StrictBool
 from sqlalchemy.orm import Session
 from app.database import Fruit, FruitNotebook, Prediction, SessionLocal, get_db, User
 from app.model.predict import predictor, BLURRY_MESSAGE, NOT_RECOGNIZED_MESSAGE
-from app.model.fruit_scope import FruitScopeUnavailable
+from app.model.fruit_scope import MIN_CONFIDENCE, FruitScopeUnavailable
 from app.routers.image_uploads import save_validated_image
 from app.schemas import NotRecognizedResponse, PredictionResponse, TopPrediction
 from app.routers.auth import decode_token, current_user
@@ -19,7 +24,81 @@ from app.routers.auth import decode_token, current_user
 router = APIRouter(prefix="/api", tags=["prediction"])
 logger = logging.getLogger(__name__)
 UPLOADS = Path(__file__).resolve().parents[2] / "uploads"
-HARDWARE_DEVICE_KEY = os.getenv("HARDWARE_DEVICE_KEY", "esp32-cam-default-key")
+
+
+class HardwareCommand(TypedDict):
+    id: int
+    action: Literal["accept", "reject"]
+    fruit_name: str
+    quality: str
+    confidence: float
+    created_at: str
+
+
+class HardwareIRUpdate(BaseModel):
+    object_detected: StrictBool
+
+
+hardware_state_lock = Lock()
+last_command: HardwareCommand | None = None
+last_ir: dict[str, bool | datetime | None] = {
+    "object_detected": False,
+    "updated_at": None,
+}
+
+
+def _authenticate_hardware_device(x_device_key: str | None) -> None:
+    configured_key = os.environ.get("HARDWARE_DEVICE_KEY", "").strip()
+    if not configured_key or configured_key.lower() in {
+        "esp32-cam-default-key",
+        "your-hardware-device-key",
+        "change-me",
+        "changeme",
+    }:
+        raise HTTPException(503, "Hardware device key is not configured.")
+    if not x_device_key or not hmac.compare_digest(
+        x_device_key.encode("utf-8"), configured_key.encode("utf-8")
+    ):
+        logger.warning("Hardware request rejected: invalid device key")
+        raise HTTPException(401, "Invalid device key.")
+
+
+def _publish_hardware_command(
+    fruit: str | None, quality: str, confidence: float
+) -> None:
+    global last_command
+    with hardware_state_lock:
+        command_id = last_command["id"] + 1 if last_command is not None else 1
+        last_command = {
+            "id": command_id,
+            "action": (
+                "accept"
+                if fruit and quality == "fresh" and confidence >= MIN_CONFIDENCE * 100
+                else "reject"
+            ),
+            "fruit_name": fruit or "",
+            "quality": quality if quality in {"fresh", "rotten", "unknown"} else "unknown",
+            "confidence": float(confidence),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+def _record_ir_status(object_detected: bool) -> None:
+    with hardware_state_lock:
+        last_ir["object_detected"] = object_detected
+        last_ir["updated_at"] = datetime.now(timezone.utc)
+
+
+def _hardware_command_payload() -> dict[str, int | str]:
+    with hardware_state_lock:
+        if last_command is None:
+            return {"id": 0, "action": "none"}
+        return {
+            "id": last_command["id"],
+            "action": last_command["action"],
+            "fruit_name": last_command["fruit_name"],
+            "quality": last_command["quality"],
+        }
 
 
 def _info(fruit: str, status: str):
@@ -103,6 +182,7 @@ async def predict(
     top_payload = _top_prediction_payload(top_scores or [])
     if status == "not_recognized" or fruit is None:
         target.unlink(missing_ok=True)
+        _publish_hardware_command(fruit, status, confidence)
         return {
             "status": "not_recognized",
             "message": message or NOT_RECOGNIZED_MESSAGE,
@@ -123,7 +203,7 @@ async def predict(
     ))
     db.commit()
 
-    return {
+    response = {
         "fruit": fruit,
         "status": status,
         "confidence": rounded_confidence,
@@ -133,6 +213,8 @@ async def predict(
         "shelf_life_estimate": shelf_life_estimate,
         "top_predictions": top_payload,
     }
+    _publish_hardware_command(fruit, status, confidence)
+    return response
 
 
 @router.post("/hardware-predict")
@@ -141,9 +223,7 @@ async def hardware_predict(
     x_device_key: str | None = Header(default=None),
 ):
     """Prediction endpoint for ESP32-CAM hardware devices. Authenticates via X-Device-Key header."""
-    if x_device_key != HARDWARE_DEVICE_KEY:
-        logger.warning("Hardware predict rejected: invalid device key")
-        raise HTTPException(401, "Invalid device key.")
+    _authenticate_hardware_device(x_device_key)
     target = None
     try:
         target = UPLOADS / f"hw-{uuid4().hex}.jpg"
@@ -174,6 +254,7 @@ async def hardware_predict(
     top_payload = _top_prediction_payload(top_scores or [])
     if status == "not_recognized" or fruit is None:
         target.unlink(missing_ok=True)
+        _publish_hardware_command(fruit, status, confidence)
         return {
             "status": "not_recognized",
             "message": message or NOT_RECOGNIZED_MESSAGE,
@@ -183,7 +264,7 @@ async def hardware_predict(
     rounded_confidence = round(confidence, 1)
     ripeness_stage, shelf_life_estimate = _ripeness(fruit, status)
     target.unlink(missing_ok=True)
-    return {
+    response = {
         "fruit": fruit,
         "status": status,
         "confidence": rounded_confidence,
@@ -191,4 +272,35 @@ async def hardware_predict(
         "shelf_life_estimate": shelf_life_estimate,
         "demo": demo,
         "top_predictions": top_payload,
+    }
+    _publish_hardware_command(fruit, status, confidence)
+    return response
+
+
+@router.get("/hardware/command")
+def hardware_command(x_device_key: str | None = Header(default=None)):
+    _authenticate_hardware_device(x_device_key)
+    return _hardware_command_payload()
+
+
+@router.post("/hardware/ir")
+def hardware_ir(payload: HardwareIRUpdate, x_device_key: str | None = Header(default=None)):
+    _authenticate_hardware_device(x_device_key)
+    _record_ir_status(payload.object_detected)
+    return {"status": "ok"}
+
+
+@router.get("/hardware/ir-status")
+def hardware_ir_status(_: User = Depends(current_user)):
+    with hardware_state_lock:
+        object_detected = bool(last_ir["object_detected"])
+        updated_at = last_ir["updated_at"]
+    seconds_since_update = (
+        round(max(0.0, (datetime.now(timezone.utc) - updated_at).total_seconds()), 3)
+        if isinstance(updated_at, datetime)
+        else None
+    )
+    return {
+        "object_detected": object_detected,
+        "seconds_since_update": seconds_since_update,
     }

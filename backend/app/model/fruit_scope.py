@@ -27,9 +27,12 @@ DEFAULT_GEMINI_MODELS = (
     "gemini-3.5-flash",
     "gemini-flash-latest",
 )
-MAX_TOTAL_SECONDS = 45.0
+SUPPORTED_FRUITS = frozenset({"apple", "banana", "orange", "pomegranate"})
+MAX_TOTAL_SECONDS = 25.0
 MAX_REQUEST_TIMEOUT_MS = 20_000
 RETRY_DELAY_SECONDS = 1.5
+MAX_ATTEMPTS_PER_MODEL = 2
+MAX_TOTAL_ATTEMPTS = 3
 RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -101,14 +104,16 @@ class FruitVisionClassifier:
 
     @staticmethod
     def _models() -> tuple[str, ...]:
-        configured = tuple(
+        configured_fallbacks = tuple(
             dict.fromkeys(
                 model.strip()
                 for model in os.getenv("GEMINI_MODELS", "").split(",")
                 if model.strip()
             )
         )
-        return configured or DEFAULT_GEMINI_MODELS
+        primary = (os.getenv("GEMINI_MODEL") or "").strip() or DEFAULT_GEMINI_MODELS[0]
+        fallbacks = configured_fallbacks or DEFAULT_GEMINI_MODELS[1:]
+        return tuple(dict.fromkeys((primary, *fallbacks)))
 
     @staticmethod
     def _api_key_or_raise() -> str:
@@ -124,6 +129,8 @@ class FruitVisionClassifier:
     def _invalid_setting(exc: Exception, upstream_status: int | None) -> str | None:
         if upstream_status in {401, 403}:
             return "GEMINI_API_KEY"
+        if upstream_status == 404:
+            return "GEMINI_MODEL"
         return None
 
     def _gemini_response_to_dict(self, response: Any) -> dict[str, Any]:
@@ -144,10 +151,13 @@ class FruitVisionClassifier:
     @staticmethod
     def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         parsed = ClassificationResponse.model_validate(payload)
+        is_supported_fruit = (
+            parsed.is_fruit and parsed.fruit_name.strip().casefold() in SUPPORTED_FRUITS
+        )
         return {
-            "is_fruit": parsed.is_fruit,
-            "fruit_name": parsed.fruit_name.strip().title() if parsed.is_fruit else "",
-            "quality": parsed.quality if parsed.is_fruit else "unknown",
+            "is_fruit": is_supported_fruit,
+            "fruit_name": parsed.fruit_name.strip().title() if is_supported_fruit else "",
+            "quality": parsed.quality if is_supported_fruit else "unknown",
             "confidence": parsed.confidence,
             "reason": parsed.reason.strip(),
         }
@@ -161,7 +171,10 @@ class FruitVisionClassifier:
         api_key = self._api_key_or_raise()
         client = genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=timeout_ms),
+            http_options=types.HttpOptions(
+                timeout=timeout_ms,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
         )
         config = {
             "response_mime_type": "application/json",
@@ -192,36 +205,51 @@ class FruitVisionClassifier:
                 return int(raw_status)
             except (TypeError, ValueError):
                 continue
-        match = re.search(r"\b(400|401|403|408|429|503|504)\b", str(exc))
+        match = re.search(r"\b(400|401|403|404|408|429|500|502|503|504)\b", str(exc))
         return int(match.group(1)) if match else None
 
     @classmethod
     def _is_retryable(cls, exc: Exception) -> bool:
         status = cls._upstream_status(exc)
-        if status in {400, 401, 403}:
+        if status in {400, 401, 403, 404}:
             return False
-        if status in {408, 429, 503, 504}:
+        if status in {408, 429, 500, 502, 503, 504}:
             return True
         text = f"{type(exc).__name__} {exc}".casefold()
-        return any(marker in text for marker in ("timeout", "timed out", "deadline"))
+        return any(
+            marker in text
+            for marker in (
+                "timeout",
+                "timed out",
+                "deadline",
+                "connection",
+                "connect",
+                "network",
+                "transport",
+            )
+        )
 
     def classify(self, image_path: str | Path) -> dict[str, Any]:
         self._api_key_or_raise()
 
         prompt = (
             "Inspect the image and return exactly the requested JSON fields. Decide whether the main "
-            "visible subject is a fruit, identify its common fruit name, and assess visible quality "
-            "as fresh, rotten, or unknown. Use unknown when quality cannot be judged. Confidence is "
+            "visible subject is one of Apple, Banana, Orange, or Pomegranate. Set is_fruit=false for "
+            "all other subjects. Identify the supported fruit and assess visible quality as fresh, "
+            "rotten, or unknown. Use unknown when quality cannot be judged. Confidence is "
             "your overall confidence from 0 to 1. If the image is not a fruit, set is_fruit=false, "
             "fruit_name to an empty string, and quality to unknown. Keep reason short."
         )
         last_error: Exception | None = None
         deadline = time.monotonic() + MAX_TOTAL_SECONDS
         image_bytes = self._prepare_image(image_path)
+        total_attempts = 0
         try:
             for model in self._models():
-                for attempt in range(2):
-                    if attempt:
+                for attempt in range(MAX_ATTEMPTS_PER_MODEL):
+                    if total_attempts >= MAX_TOTAL_ATTEMPTS:
+                        break
+                    if total_attempts:
                         remaining = deadline - time.monotonic()
                         if remaining <= RETRY_DELAY_SECONDS:
                             break
@@ -235,6 +263,7 @@ class FruitVisionClassifier:
                         min(MAX_REQUEST_TIMEOUT_MS, int(remaining * 1000)),
                     )
                     attempt_started = time.monotonic()
+                    total_attempts += 1
                     try:
                         response = self._generate_content(
                             image_bytes, prompt, model, timeout_ms
@@ -295,6 +324,11 @@ class FruitVisionClassifier:
             elif upstream_status in {408, 504} or "timeout" in type(exc).__name__.casefold() or "deadline" in str(exc).casefold():
                 message, status_code = "Image validation timed out. Please try again shortly.", 504
             elif upstream_status in {401, 403}:
+                message, status_code = (
+                    "Image validation is misconfigured on the server. Please contact the administrator.",
+                    503,
+                )
+            elif upstream_status == 404:
                 message, status_code = (
                     "Image validation is misconfigured on the server. Please contact the administrator.",
                     503,

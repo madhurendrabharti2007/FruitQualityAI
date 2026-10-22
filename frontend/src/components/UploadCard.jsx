@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Camera, ImagePlus, UploadCloud, X } from 'lucide-react';
 
-export default function UploadCard({ onPredict, busy }) {
+export default function UploadCard({ onPredict, busy, autoCaptureControl }) {
   const input = useRef(null);
   const video = useRef(null);
   const stream = useRef(null);
@@ -181,6 +181,7 @@ export default function UploadCard({ onPredict, busy }) {
           <button className="secondary-button" onClick={openCamera}>
             <Camera size={17} /> Use camera
           </button>
+          {autoCaptureControl}
           {file && (
             <button className="primary-button" disabled={busy} onClick={() => onPredict(file)}>
               {busy ? 'Reading...' : 'Check freshness'}
